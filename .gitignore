@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Local environment (machine-specific Fusion API paths)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
