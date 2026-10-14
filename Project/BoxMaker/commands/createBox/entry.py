@@ -36,6 +36,7 @@ INPUT_HEIGHT = 'box_height'
 INPUT_THICKNESS = 'material_thickness'
 INPUT_KERF = 'kerf'
 INPUT_FINGER_WIDTH = 'finger_width'
+INPUT_OPEN_TOP = 'open_top'
 INPUT_MESSAGES = 'validation_messages'
 
 # Names given to the geometry this command creates.
@@ -120,6 +121,9 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     # Joint settings.
     value_input(INPUT_FINGER_WIDTH, 'Min Finger Width', '10 mm')
 
+    # Style.
+    inputs.addBoolValueInput(INPUT_OPEN_TOP, 'Open Top', True, '', False)
+
     # Sits at the bottom of the dialog and stays hidden until something is
     # wrong, so a valid box shows no clutter. No label, so it spans the
     # full width.
@@ -171,6 +175,7 @@ def read_parameters(inputs: adsk.core.CommandInputs) -> BoxParameters:
         thickness=value(INPUT_THICKNESS),
         kerf=value(INPUT_KERF),
         finger_width=value(INPUT_FINGER_WIDTH),
+        open_top=inputs.itemById(INPUT_OPEN_TOP).value,
     )
 
 

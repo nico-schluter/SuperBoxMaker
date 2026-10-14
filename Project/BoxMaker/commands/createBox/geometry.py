@@ -54,6 +54,15 @@ class Edge:
         return [0.0 if self.is_out(index) else thickness for index in range(self.count)]
 
 
+SMOOTH_EDGE = Edge(count=1, starts_out=True)
+"""An edge with no joint: one finger spanning the whole side.
+
+Falls out of the ordinary pattern rather than needing a case of its own.
+A single cell in the "out" state means the outline runs straight from one
+corner to the other, and the kerf relief still applies to it.
+"""
+
+
 @dataclass(frozen=True)
 class Panel:
     """One flat part of the box, in both of the places it exists.
@@ -84,6 +93,9 @@ class Panel:
 class BoxParameters:
     """The box definition, read out of the dialog.
 
+    `open_top` leaves the lid off and finishes the walls with a plain top
+    edge, for a tray or an open box.
+
     `finger_width` is a minimum rather than an exact size: an edge has to
     divide into a whole number of fingers, so the count is rounded down and
     the real width derived back from it. The fingers that come out are at
@@ -96,6 +108,7 @@ class BoxParameters:
     thickness: float
     kerf: float
     finger_width: float
+    open_top: bool = False
 
 
 def finger_count(edge_length: float, minimum_width: float, require_odd: bool = False) -> int:
@@ -386,6 +399,13 @@ def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
     wall_first = Edge(vertical, starts_out=True)
     wall_last = Edge(vertical, starts_out=False)
 
+    # With no lid to meet, the walls finish flush along the top. The vertical
+    # joints still run the full height, so the corners stay interlocked and
+    # the assembled rim comes out flush even though each panel alone has a
+    # notch at its top corner.
+    wall_length_top = SMOOTH_EDGE if params.open_top else wall_length
+    wall_width_top = SMOOTH_EDGE if params.open_top else wall_width
+
     x_axis: Vector = (1.0, 0.0, 0.0)
     y_axis: Vector = (0.0, 1.0, 0.0)
     z_axis: Vector = (0.0, 0.0, 1.0)
@@ -401,14 +421,17 @@ def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
         ('Top', length, width, x_axis, y_axis, z_axis, (0.0, 0.0, height - thickness),
          lid_width, lid_width, lid_length, lid_length),
         ('Front', length, height, x_axis, z_axis, (0.0, -1.0, 0.0), (0.0, thickness, 0.0),
-         wall_first, wall_last, wall_length, wall_length),
+         wall_first, wall_last, wall_length, wall_length_top),
         ('Right', width, height, y_axis, z_axis, x_axis, (length - thickness, 0.0, 0.0),
-         wall_first, wall_last, wall_width, wall_width),
+         wall_first, wall_last, wall_width, wall_width_top),
         ('Back', length, height, (-1.0, 0.0, 0.0), z_axis, y_axis, (length, width - thickness, 0.0),
-         wall_first, wall_last, wall_length, wall_length),
+         wall_first, wall_last, wall_length, wall_length_top),
         ('Left', width, height, (0.0, -1.0, 0.0), z_axis, (-1.0, 0.0, 0.0), (thickness, width, 0.0),
-         wall_first, wall_last, wall_width, wall_width),
+         wall_first, wall_last, wall_width, wall_width_top),
     ]
+
+    if params.open_top:
+        specs = [spec for spec in specs if spec[0] != 'Top']
 
     # Lay the panels out in a row in the sketch, separated by a visible gap.
     # Every outline grows by half a kerf on each side, so the gap allows for
