@@ -8,11 +8,23 @@ Fusion-specific work lives in entry.py.
 All lengths are in Fusion's internal units (centimetres).
 """
 
+import math
 from dataclasses import dataclass
 
 # Fewer than three fingers along an edge does not locate the parts against
 # each other, so every edge gets at least this many.
 MIN_FINGER_COUNT = 3
+
+# A finger has to be wider than the material is thick, or the thickness cut
+# back at a corner eats into the finger beside it and leaves a sliver. Two
+# thicknesses leaves a margin.
+MIN_FINGER_WIDTH_IN_THICKNESSES = 2
+
+# Slack for comparing lengths, in internal units (cm), which is 10 picometres.
+# Dialog values do not survive the trip through millimetres exactly: 3 mm
+# arrives as 0.30000000000000004, so twice it is a hair over 6 mm and an
+# exactly-6 mm finger would be rejected. Far below any real tolerance.
+LENGTH_TOLERANCE = 1e-9
 
 Vector = tuple[float, float, float]
 Point2D = tuple[float, float]
@@ -72,9 +84,11 @@ class Panel:
 class BoxParameters:
     """The box definition, read out of the dialog.
 
-    `finger_width` is a target rather than a promise: an edge has to divide
-    into a whole number of fingers, so the real width is derived from the
-    count that best fits.
+    `finger_width` is a minimum rather than an exact size: an edge has to
+    divide into a whole number of fingers, so the count is rounded down and
+    the real width derived back from it. The fingers that come out are at
+    least this wide, except on an edge short enough for the three finger
+    minimum to bite.
     """
     length: float
     width: float
@@ -84,24 +98,37 @@ class BoxParameters:
     finger_width: float
 
 
-def finger_count(edge_length: float, nominal_width: float, require_odd: bool = False) -> int:
+def finger_count(edge_length: float, minimum_width: float, require_odd: bool = False) -> int:
     """How many fingers to divide an edge into.
 
-    The nominal finger width rarely divides the edge exactly, and a partial
-    finger at the end would be useless, so the count is rounded to the
-    nearest whole number and the real finger width derived back from it.
+    The requested finger width rarely divides the edge exactly, and a partial
+    finger at the end would be useless, so the count is a whole number and
+    the real finger width is derived back from it.
+
+    Rounding is always down, which makes the requested width a minimum: the
+    fingers that come out are at least as wide as asked for, never thinner.
+    Rounding to nearest would treat the request as a midpoint and give
+    fingers up to half a finger narrower than asked, which is the wrong way
+    to miss when the width has a lower bound to respect.
 
     `require_odd` forces an odd count, which makes the pattern a palindrome:
     it reads the same from either end, and starts and ends in the same state.
     Top and bottom panels need that, so they present a gap at every corner
-    whichever way round the edge is traversed.
+    whichever way round the edge is traversed. Stepping down to reach an odd
+    count keeps the fingers wide, in line with the rounding above.
+
+    The three finger minimum still wins over all of this. It is the one case
+    where fingers can come out narrower than requested, and the only reason
+    the validation rules have to look at the real width at all.
     """
-    exact = edge_length / nominal_width
-    count = max(1, round(exact))
+    exact = edge_length / minimum_width
+
+    # The tolerance keeps an edge that divides exactly, but arrives a hair
+    # under through floating point, from losing a whole finger.
+    count = math.floor(exact + LENGTH_TOLERANCE)
 
     if require_odd and count % 2 == 0:
-        # Step to whichever neighbouring odd count is closer to the ideal.
-        count = count + 1 if exact > count else count - 1
+        count -= 1
 
     count = max(count, MIN_FINGER_COUNT)
 
@@ -229,18 +256,93 @@ def outline_bounds(outline: list[Point2D]) -> tuple[float, float, float, float]:
     )
 
 
-def smallest_finger_width(params: "BoxParameters") -> float:
-    """The narrowest finger anywhere on the box.
+def actual_finger_width(params: "BoxParameters") -> dict[str, float]:
+    """The real finger width along each of the three directions.
 
-    The kerf has to be comfortably smaller than this: it eats into both
-    sides of every gap, so a kerf approaching a finger's width would close
-    the gap entirely.
+    The requested finger width is a minimum. Rounding down means the real
+    fingers are at least that wide, with one exception: a short edge forced
+    up to the three finger minimum, where they come out narrower.
     """
-    return min(
-        params.height / finger_count(params.height, params.finger_width),
-        params.length / finger_count(params.length, params.finger_width, require_odd=True),
-        params.width / finger_count(params.width, params.finger_width, require_odd=True),
-    )
+    return {
+        'length': params.length / finger_count(params.length, params.finger_width, require_odd=True),
+        'width': params.width / finger_count(params.width, params.finger_width, require_odd=True),
+        'height': params.height / finger_count(params.height, params.finger_width),
+    }
+
+
+def validate(params: "BoxParameters", format_length=None) -> list[str]:
+    """Everything wrong with these parameters, worst first.
+
+    An empty list means the box can be built. Messages are kept to a few
+    words so they fit the dialog.
+
+    Both real rules are expressed in material thicknesses, because that is
+    what the failure is about: a corner is cut back by one thickness, so a
+    finger narrower than about two thicknesses gets eaten into and leaves a
+    sliver. Neither rule is expressed in the requested finger width, which
+    is not what binds. On a short edge the three finger minimum overrides
+    the request entirely, so a box can be too small to finger at any
+    requested width.
+
+    Since finger_count rounds down, the real fingers are at least as wide as
+    requested except when that minimum bites, and the two rules below cover
+    both cases. The check on the real width afterwards should therefore
+    never fire; it is kept as a backstop against changes to finger_count.
+    """
+    format_length = format_length or _format_millimetres
+    messages: list[str] = []
+
+    if min(params.length, params.width, params.height) <= 0:
+        messages.append('Box dimensions must be positive')
+    if params.thickness <= 0:
+        messages.append('Material thickness must be positive')
+    if params.finger_width <= 0:
+        messages.append('Finger width must be positive')
+    if params.kerf < 0:
+        messages.append('Kerf cannot be negative')
+
+    # Everything below divides by these, so stop while they are unusable.
+    if messages:
+        return messages
+
+    shortest = min(params.length, params.width, params.height)
+    narrowest_allowed = MIN_FINGER_WIDTH_IN_THICKNESSES * params.thickness
+
+    if not _less(params.thickness * 2, shortest):
+        messages.append('Walls thicker than the box')
+
+    # Three fingers at the narrowest they are allowed to be. Below this no
+    # requested finger width can rescue the box; the material has to get
+    # thinner or the box bigger.
+    smallest_box = MIN_FINGER_COUNT * narrowest_allowed
+    fingers_explained = True
+    if _less(shortest, smallest_box):
+        messages.append(f'Box needs {format_length(smallest_box)} sides')
+    elif _less(params.finger_width, narrowest_allowed):
+        messages.append(f'Fingers need {format_length(narrowest_allowed)} minimum')
+    else:
+        fingers_explained = False
+
+    # The backstop, and only worth hearing from when the rules above found
+    # nothing: otherwise it just restates what has already been said.
+    narrowest = min(actual_finger_width(params).values())
+    if not fingers_explained and _less(narrowest, narrowest_allowed):
+        messages.append(f'Fingers {format_length(narrowest)}, need {format_length(narrowest_allowed)}')
+
+    if not _less(params.kerf, narrowest):
+        messages.append('Kerf wider than a finger')
+
+    return messages
+
+
+def _less(value: float, limit: float) -> bool:
+    """Whether a length is meaningfully below a limit."""
+    return value < limit - LENGTH_TOLERANCE
+
+
+def _format_millimetres(value: float) -> str:
+    """Fallback formatter, for use outside Fusion."""
+    return f'{value * 10:.2f} mm'
 
 
 def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:

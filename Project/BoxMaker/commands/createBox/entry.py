@@ -6,7 +6,7 @@ from ...lib import fusionAddInUtils as futil
 from ... import config
 from .geometry import (
     BoxParameters, Panel, Point2D,
-    panel_layout, panel_outline, outline_bounds, smallest_finger_width,
+    panel_layout, panel_outline, outline_bounds, validate,
 )
 
 app = adsk.core.Application.get()
@@ -36,6 +36,7 @@ INPUT_HEIGHT = 'box_height'
 INPUT_THICKNESS = 'material_thickness'
 INPUT_KERF = 'kerf'
 INPUT_FINGER_WIDTH = 'finger_width'
+INPUT_MESSAGES = 'validation_messages'
 
 # Names given to the geometry this command creates.
 LAYOUT_SKETCH_NAME = 'Flat Layout'
@@ -53,6 +54,10 @@ PROFILE_MATCH_TOLERANCE = 1e-6
 # a panel. Mixes lengths (cm) and direction cosines, but both are far larger
 # than this for any real placement.
 TRANSFORM_TOLERANCE = 1e-9
+
+# Height of the validation message box, in rows. Fixed, so the dialog does
+# not jump about as messages come and go.
+MESSAGE_ROWS = 3
 
 # Local list of event handlers used to maintain a reference so
 # they are not released and garbage collected.
@@ -113,7 +118,13 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     value_input(INPUT_KERF, 'Kerf', '0.15 mm')
 
     # Joint settings.
-    value_input(INPUT_FINGER_WIDTH, 'Finger Width', '10 mm')
+    value_input(INPUT_FINGER_WIDTH, 'Min Finger Width', '10 mm')
+
+    # Sits at the bottom of the dialog and stays hidden until something is
+    # wrong, so a valid box shows no clutter. No label, so it spans the
+    # full width.
+    inputs.addTextBoxCommandInput(INPUT_MESSAGES, '', '', MESSAGE_ROWS, True)
+    refresh_messages(inputs)
 
     # Connect to the events that are needed by this command.
     futil.add_handler(args.command.execute, command_execute, local_handlers=local_handlers)
@@ -121,6 +132,30 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     futil.add_handler(args.command.inputChanged, command_input_changed, local_handlers=local_handlers)
     futil.add_handler(args.command.validateInputs, command_validate_input, local_handlers=local_handlers)
     futil.add_handler(args.command.destroy, command_destroy, local_handlers=local_handlers)
+
+
+def format_length(value: float) -> str:
+    """Format an internal length the way the document displays lengths."""
+    units = app.activeProduct.unitsManager
+    return units.formatValue(value, units.defaultLengthUnits)
+
+
+def problems(inputs: adsk.core.CommandInputs) -> list[str]:
+    """Everything wrong with the dialog as it stands."""
+    return validate(read_parameters(inputs), format_length)
+
+
+def refresh_messages(inputs: adsk.core.CommandInputs):
+    """Show or hide the message box to match the current inputs."""
+    message_box: adsk.core.TextBoxCommandInput = inputs.itemById(INPUT_MESSAGES)
+    if message_box is None:
+        return
+
+    messages = problems(inputs)
+    message_box.isVisible = bool(messages)
+    if messages:
+        lines = '<br/>'.join(messages)
+        message_box.formattedText = f'<span style="color:#c00">{lines}</span>'
 
 
 def read_parameters(inputs: adsk.core.CommandInputs) -> BoxParameters:
@@ -360,31 +395,17 @@ def command_input_changed(args: adsk.core.InputChangedEventArgs):
 
     futil.log(f'{CMD_NAME} Input Changed Event fired from a change to {changed_input.id}')
 
-    # TODO React to dependencies between inputs here, e.g. clamping the finger
-    # width to something the shortest edge can actually divide into.
+    # Validation runs here as well as in validateInputs, because that handler
+    # should not be reaching back into the dialog to change other inputs.
+    refresh_messages(inputs)
 
 
 # This event handler is called when the user interacts with any of the inputs in the dialog
 # which allows you to verify that all of the inputs are valid and enables the OK button.
 def command_validate_input(args: adsk.core.ValidateInputsEventArgs):
-    params = read_parameters(args.inputs)
-
-    # Every dimension must be positive, the walls have to fit inside the box,
-    # and a finger has to be at least as wide as the material is thick.
-    valid = (
-        min(params.length, params.width, params.height, params.thickness, params.finger_width) > 0
-        and params.kerf >= 0
-        and params.thickness * 2 < min(params.length, params.width, params.height)
-        and params.finger_width >= params.thickness
-    )
-
-    # The kerf eats into both sides of every gap, so it has to stay well
-    # under the narrowest finger, and under the material thickness or the
-    # fingers would stand proud of the face they meet.
-    if valid:
-        valid = params.kerf < smallest_finger_width(params) and params.kerf < params.thickness * 2
-
-    args.areInputsValid = valid
+    # Blocks both OK and the preview, so a box that cannot be built is never
+    # attempted. The reasons are shown by refresh_messages.
+    args.areInputsValid = not problems(args.inputs)
 
 
 # This event handler is called when the command terminates.
