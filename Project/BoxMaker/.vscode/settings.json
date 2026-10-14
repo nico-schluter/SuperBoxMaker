@@ -1,5 +1,5 @@
 {
 	"python.autoComplete.extraPaths":	["/Users/phos/Library/Application Support/Autodesk/Autodesk Fusion 360/API/Python/defs"],
 	"python.analysis.extraPaths":	["/Users/phos/Library/Application Support/Autodesk/Autodesk Fusion 360/API/Python/defs"],
-	"python.defaultInterpreterPath":	"/Users/phos/Library/Application Support/Autodesk/webdeploy/production/024afa2ce08cf97ff9cbfaea218f7e832e39fbe4/Autodesk Fusion.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python"
+	"python.defaultInterpreterPath":	"/Users/phos/Library/Application Support/Autodesk/webdeploy/production/c139e2731e42a0340acc3d34de2cbdb01237a27c/Autodesk Fusion.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python"
 }

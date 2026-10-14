@@ -1,13 +1,13 @@
 {
-	"autodeskProduct":	"Fusion",
-	"type":	"addin",
-	"author":	"Phos Systems",
-	"description":	{
-		"":	"Laser cut box maker "
-	},
-	"version":	"",
-	"runOnStartup":	false,
-	"supportedOS":	"windows|mac",
-	"editEnabled":	true,
-	"iconFilename":	"AddInIcon.svg"
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "author": "Phos Systems",
+    "description": {
+        "": "Laser cut box maker "
+    },
+    "version": "0.1.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true,
+    "iconFilename": "AddInIcon.svg"
 }
