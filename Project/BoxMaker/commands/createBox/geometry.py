@@ -111,7 +111,7 @@ def finger_count(edge_length: float, nominal_width: float, require_odd: bool = F
     return count
 
 
-def panel_outline(panel: Panel, thickness: float) -> list[Point2D]:
+def panel_outline(panel: Panel, thickness: float, kerf: float = 0.0) -> list[Point2D]:
     """The panel's flat outline as a closed loop of points.
 
     Walks the perimeter counter-clockwise from the bottom-left. Along each
@@ -122,49 +122,79 @@ def panel_outline(panel: Panel, thickness: float) -> list[Point2D]:
     takes one coordinate from each edge's end cell. A corner cut back by both
     of its edges therefore loses the full thickness square, which is what the
     neighbouring panel's finger fills.
-    """
-    width, height = panel.u, panel.v
-    bottom = panel.edge_v0.offsets(thickness)
-    right = panel.edge_u1.offsets(thickness)
-    top = panel.edge_v1.offsets(thickness)
-    left = panel.edge_u0.offsets(thickness)
 
-    cell_u = width / panel.edge_v0.count
-    cell_v = height / panel.edge_u1.count
-    cell_u_top = width / panel.edge_v1.count
-    cell_v_left = height / panel.edge_u0.count
+    The laser burns away material centred on the line it follows, so every
+    line is offset outward by half the kerf to compensate. That applies to
+    the whole outline, not just the finger flanks, so a finger still sits
+    flush against the face it meets. It leaves panels slightly interfering in
+    the assembled view, which is correct: that material is what the laser
+    removes.
+    """
+    relief = kerf / 2
+    width, height = panel.u, panel.v
+
+    bottom = _relieved_offsets(panel.edge_v0, thickness, relief)
+    right = _relieved_offsets(panel.edge_u1, thickness, relief)
+    top = _relieved_offsets(panel.edge_v1, thickness, relief)
+    left = _relieved_offsets(panel.edge_u0, thickness, relief)
+
+    bottom_steps = _relieved_boundaries(panel.edge_v0, width, relief)
+    right_steps = _relieved_boundaries(panel.edge_u1, height, relief)
+    top_steps = _relieved_boundaries(panel.edge_v1, width, relief)
+    left_steps = _relieved_boundaries(panel.edge_u0, height, relief)
 
     points: list[Point2D] = []
 
     # Bottom-left corner, then left to right along the bottom edge.
     points.append((left[0], bottom[0]))
-    for index in range(panel.edge_v0.count - 1):
-        boundary = (index + 1) * cell_u
+    for index, boundary in enumerate(bottom_steps):
         points.append((boundary, bottom[index]))
         points.append((boundary, bottom[index + 1]))
 
     # Bottom-right corner, then upwards along the right edge.
     points.append((width - right[0], bottom[-1]))
-    for index in range(panel.edge_u1.count - 1):
-        boundary = (index + 1) * cell_v
+    for index, boundary in enumerate(right_steps):
         points.append((width - right[index], boundary))
         points.append((width - right[index + 1], boundary))
 
     # Top-right corner, then right to left along the top edge.
     points.append((width - right[-1], height - top[-1]))
-    for index in reversed(range(panel.edge_v1.count - 1)):
-        boundary = (index + 1) * cell_u_top
+    for index in reversed(range(len(top_steps))):
+        boundary = top_steps[index]
         points.append((boundary, height - top[index + 1]))
         points.append((boundary, height - top[index]))
 
     # Top-left corner, then downwards along the left edge back to the start.
     points.append((left[-1], height - top[0]))
-    for index in reversed(range(panel.edge_u0.count - 1)):
-        boundary = (index + 1) * cell_v_left
+    for index in reversed(range(len(left_steps))):
+        boundary = left_steps[index]
         points.append((left[index + 1], boundary))
         points.append((left[index], boundary))
 
     return _without_repeats(points)
+
+
+def _relieved_offsets(edge: Edge, thickness: float, relief: float) -> list[float]:
+    """Cell cut-back depths, moved outward by the kerf relief.
+
+    A finger reaches `relief` beyond the panel's nominal extent, and a gap
+    stops `relief` short of its nominal depth.
+    """
+    return [offset - relief for offset in edge.offsets(thickness)]
+
+
+def _relieved_boundaries(edge: Edge, edge_length: float, relief: float) -> list[float]:
+    """Where the outline steps between cells, moved outward by the relief.
+
+    Cells alternate strictly, so each boundary has a finger on exactly one
+    side. The boundary moves towards the gap, widening the finger by `relief`
+    and narrowing the gap by the same amount on each of its sides.
+    """
+    cell = edge_length / edge.count
+    return [
+        (index + 1) * cell + (relief if edge.is_out(index) else -relief)
+        for index in range(edge.count - 1)
+    ]
 
 
 def _without_repeats(points: list[Point2D], tolerance: float = 1e-9) -> list[Point2D]:
@@ -187,6 +217,30 @@ def _without_repeats(points: list[Point2D], tolerance: float = 1e-9) -> list[Poi
 
 def _same_point(first: Point2D, second: Point2D, tolerance: float) -> bool:
     return abs(first[0] - second[0]) < tolerance and abs(first[1] - second[1]) < tolerance
+
+
+def outline_bounds(outline: list[Point2D]) -> tuple[float, float, float, float]:
+    """The outline's bounding box as (min u, min v, max u, max v)."""
+    return (
+        min(u for u, _ in outline),
+        min(v for _, v in outline),
+        max(u for u, _ in outline),
+        max(v for _, v in outline),
+    )
+
+
+def smallest_finger_width(params: "BoxParameters") -> float:
+    """The narrowest finger anywhere on the box.
+
+    The kerf has to be comfortably smaller than this: it eats into both
+    sides of every gap, so a kerf approaching a finger's width would close
+    the gap entirely.
+    """
+    return min(
+        params.height / finger_count(params.height, params.finger_width),
+        params.length / finger_count(params.length, params.finger_width, require_odd=True),
+        params.width / finger_count(params.width, params.finger_width, require_odd=True),
+    )
 
 
 def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
@@ -255,7 +309,9 @@ def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
     ]
 
     # Lay the panels out in a row in the sketch, separated by a visible gap.
-    gap = max(layout_gap_min, thickness * 2)
+    # Every outline grows by half a kerf on each side, so the gap allows for
+    # that too, keeping the panels from touching.
+    gap = max(layout_gap_min, thickness * 2) + params.kerf
     panels = []
     cursor = 0.0
     for name, u, v, local_x, local_y, local_z, offset, edge_u0, edge_u1, edge_v0, edge_v1 in specs:

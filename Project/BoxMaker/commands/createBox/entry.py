@@ -4,7 +4,10 @@ import os
 
 from ...lib import fusionAddInUtils as futil
 from ... import config
-from .geometry import BoxParameters, Panel, panel_layout, panel_outline
+from .geometry import (
+    BoxParameters, Panel, Point2D,
+    panel_layout, panel_outline, outline_bounds, smallest_finger_width,
+)
 
 app = adsk.core.Application.get()
 ui = app.userInterface
@@ -107,7 +110,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 
     # Material and machine properties.
     value_input(INPUT_THICKNESS, 'Material Thickness', '3 mm')
-    value_input(INPUT_KERF, 'Kerf', '0.1 mm')
+    value_input(INPUT_KERF, 'Kerf', '0.15 mm')
 
     # Joint settings.
     value_input(INPUT_FINGER_WIDTH, 'Finger Width', '10 mm')
@@ -136,8 +139,9 @@ def read_parameters(inputs: adsk.core.CommandInputs) -> BoxParameters:
     )
 
 
-def draw_panels(sketch: adsk.fusion.Sketch, panels: list[Panel], thickness: float):
-    """Draw each panel's fingered outline into the single flat sketch.
+def draw_panels(sketch: adsk.fusion.Sketch, panels: list[Panel],
+                outlines: dict[str, list[Point2D]]):
+    """Draw each panel's outline into the single flat sketch.
 
     Lines are chained end to start so Fusion sees one closed loop. Passing
     fresh Point3D objects for both ends would leave coincident but unjoined
@@ -151,10 +155,9 @@ def draw_panels(sketch: adsk.fusion.Sketch, panels: list[Panel], thickness: floa
         lines = sketch.sketchCurves.sketchLines
         for panel in panels:
             origin_x, origin_y = panel.layout_origin
-            outline = panel_outline(panel, thickness)
             points = [
                 adsk.core.Point3D.create(origin_x + u, origin_y + v, 0)
-                for u, v in outline
+                for u, v in outlines[panel.name]
             ]
 
             first = lines.addByTwoPoints(points[0], points[1])
@@ -168,17 +171,19 @@ def draw_panels(sketch: adsk.fusion.Sketch, panels: list[Panel], thickness: floa
         sketch.isComputeDeferred = False
 
 
-def find_profile(sketch: adsk.fusion.Sketch, panel: Panel) -> adsk.fusion.Profile:
+def find_profile(sketch: adsk.fusion.Sketch, panel: Panel,
+                 outline: list[Point2D]) -> adsk.fusion.Profile:
     """Find the profile belonging to a panel by its bounding box.
 
-    Every panel has at least one finger reaching the full extent of each
-    edge, so a panel's outline and its layout rectangle share a bounding box
-    exactly. That is a sturdier handle than the centroid, which shifts as
-    fingers are added, and than the index, which is not ordered and will
-    shift again once the user edits the sketch.
+    Matched against the bounds of the outline actually drawn, so kerf relief
+    is accounted for without having to re-derive it. A bounding box is a
+    sturdier handle than the centroid, which shifts as fingers are added, and
+    than the index, which is not ordered and will shift again once the user
+    edits the sketch.
     """
     origin_x, origin_y = panel.layout_origin
-    expected = (origin_x, origin_y, origin_x + panel.u, origin_y + panel.v)
+    min_u, min_v, max_u, max_v = outline_bounds(outline)
+    expected = (origin_x + min_u, origin_y + min_v, origin_x + max_u, origin_y + max_v)
 
     for profile in sketch.profiles:
         box = profile.boundingBox
@@ -288,12 +293,20 @@ def build_box(params: BoxParameters, design: adsk.fusion.Design, is_preview: boo
     timeline = design.timeline
     start_index = timeline.markerPosition
 
+    # Worked out once and reused: the outline decides both what is drawn and
+    # which profile belongs to which panel.
+    outlines = {
+        panel.name: panel_outline(panel, params.thickness, params.kerf)
+        for panel in panels
+    }
+
     sketch = component.sketches.add(component.xYConstructionPlane)
     sketch.name = LAYOUT_SKETCH_NAME
-    draw_panels(sketch, panels, params.thickness)
+    draw_panels(sketch, panels, outlines)
 
     for panel in panels:
-        body = extrude_panel(component, find_profile(sketch, panel), panel, params.thickness)
+        profile = find_profile(sketch, panel, outlines[panel.name])
+        body = extrude_panel(component, profile, panel, params.thickness)
         place_panel(component, body, panel)
 
     group_timeline_entries(timeline, start_index)
@@ -342,12 +355,20 @@ def command_validate_input(args: adsk.core.ValidateInputsEventArgs):
 
     # Every dimension must be positive, the walls have to fit inside the box,
     # and a finger has to be at least as wide as the material is thick.
-    args.areInputsValid = (
+    valid = (
         min(params.length, params.width, params.height, params.thickness, params.finger_width) > 0
         and params.kerf >= 0
         and params.thickness * 2 < min(params.length, params.width, params.height)
         and params.finger_width >= params.thickness
     )
+
+    # The kerf eats into both sides of every gap, so it has to stay well
+    # under the narrowest finger, and under the material thickness or the
+    # fingers would stand proud of the face they meet.
+    if valid:
+        valid = params.kerf < smallest_finger_width(params) and params.kerf < params.thickness * 2
+
+    args.areInputsValid = valid
 
 
 # This event handler is called when the command terminates.
