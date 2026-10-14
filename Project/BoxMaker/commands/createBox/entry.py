@@ -147,6 +147,15 @@ def draw_panels(sketch: adsk.fusion.Sketch, panels: list[Panel],
     fresh Point3D objects for both ends would leave coincident but unjoined
     points, and no profile would form.
 
+    This is the slowest part of building a box: each call into the sketch
+    API costs roughly a millisecond whatever it does, and a finely divided
+    box runs to a thousand lines. Two things have been measured and were
+    not worth keeping. Drawing each distinct shape once and duplicating it
+    with Sketch.copy halves the number of calls but runs about half again
+    slower, because one copy of a few hundred entities costs more than
+    drawing them. Deferring compute, which is done here, is worth it: the
+    solve itself is only about a tenth of the cost of adding the lines.
+
     Compute is deferred for the duration: without it Fusion re-solves the
     sketch and rebuilds its profiles after every single line.
     """
@@ -191,7 +200,11 @@ def find_profile(sketch: adsk.fusion.Sketch, panel: Panel,
         if all(abs(a - b) < PROFILE_MATCH_TOLERANCE for a, b in zip(actual, expected)):
             return profile
 
-    raise RuntimeError(f'No sketch profile found for the {panel.name} panel')
+    raise RuntimeError(
+        f'No sketch profile found for the {panel.name} panel. '
+        f'The sketch has {sketch.profiles.count} profiles; expected one per panel. '
+        f'Looked for bounds {expected}.'
+    )
 
 
 def extrude_panel(component: adsk.fusion.Component, profile: adsk.fusion.Profile,
@@ -302,6 +315,9 @@ def build_box(params: BoxParameters, design: adsk.fusion.Design, is_preview: boo
 
     sketch = component.sketches.add(component.xYConstructionPlane)
     sketch.name = LAYOUT_SKETCH_NAME
+    # Note: do not set sketch.areProfilesShown = False to speed this up. It
+    # does not merely hide the shading, it stops Fusion computing profiles at
+    # all, and the extrudes then have nothing to work from.
     draw_panels(sketch, panels, outlines)
 
     for panel in panels:
