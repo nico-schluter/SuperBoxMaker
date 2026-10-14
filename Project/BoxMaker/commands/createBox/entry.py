@@ -16,7 +16,8 @@ ui = app.userInterface
 # *** Command identity information. ***
 CMD_ID = "create_Box"
 CMD_NAME = 'Create Box'
-CMD_Description = 'Generate a laser-cut box with finger joints'
+CMD_Description = ('Generate a laser-cut box with finger joints. Creates a flat '
+                   'sketch of every panel and assembles them in 3D.')
 
 # Specify that the command will be promoted to the panel.
 IS_PROMOTED = True

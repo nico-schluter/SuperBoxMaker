@@ -3,7 +3,7 @@
     "type": "addin",
     "author": "Phos Systems",
     "description": {
-        "": "Laser cut box maker "
+        "": "Super Box Maker generates laser-cut boxes with finger joints. Set the outside dimensions, material thickness and kerf, and get a flat sketch of every panel ready to cut, assembled in 3D so you can check the fit. The sketch stays live: add a hole to a panel and the model follows."
     },
     "version": "0.1.0",
     "runOnStartup": false,
