@@ -4,6 +4,7 @@ import os
 
 from ...lib import fusionAddInUtils as futil
 from ... import config
+from . import appearance
 from .geometry import (
     BoxParameters, Panel, Point2D,
     panel_layout, panel_outline, outline_bounds, validate,
@@ -15,20 +16,25 @@ ui = app.userInterface
 
 # *** Command identity information. ***
 CMD_ID = "create_Box"
-CMD_NAME = 'Create Box'
+CMD_NAME = 'Laser Cut Box'
 CMD_Description = ('Generate a laser-cut box with finger joints. Creates a flat '
                    'sketch of every panel and assembles them in 3D.')
 
-# Specify that the command will be promoted to the panel.
-IS_PROMOTED = True
-
 # *** Location where the command button will be created. ***
+# Placed after Thread, with the other feature commands, rather than down
+# among the primitive solids.
 WORKSPACE_ID = 'FusionSolidEnvironment'
 PANEL_ID = 'SolidCreatePanel'
-COMMAND_BESIDE_ID = 'PrimitiveBox'
+COMMAND_BESIDE_ID = 'ThreadCmd'
 
 # Resource location for command icons.
 ICON_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
+
+# Image shown in the expanded tooltip. Fusion's docs ask for 300px wide.
+TOOLCLIP_PATH = os.path.join(ICON_FOLDER, 'toolclip.png')
+
+# Local page shown when the user presses F1 with the dialog open.
+HELP_PATH = os.path.join(ICON_FOLDER, 'help.html')
 
 # Input ids, kept in one place so the dialog and the readers can't drift apart.
 INPUT_LENGTH = 'box_length'
@@ -38,6 +44,7 @@ INPUT_THICKNESS = 'material_thickness'
 INPUT_KERF = 'kerf'
 INPUT_FINGER_WIDTH = 'finger_width'
 INPUT_OPEN_TOP = 'open_top'
+INPUT_APPEARANCE = 'realistic_appearance'
 INPUT_MESSAGES = 'validation_messages'
 
 # Names given to the geometry this command creates.
@@ -70,6 +77,7 @@ local_handlers = []
 def start():
     # Create a command Definition.
     cmd_def = ui.commandDefinitions.addButtonDefinition(CMD_ID, CMD_NAME, CMD_Description, ICON_FOLDER)
+    cmd_def.toolClipFilename = TOOLCLIP_PATH
 
     # Define an event handler for the command created event. It will be called when the button is clicked.
     futil.add_handler(cmd_def.commandCreated, command_created)
@@ -77,8 +85,9 @@ def start():
     # ******** Add a button into the UI so the user can run the command. ********
     workspace = ui.workspaces.itemById(WORKSPACE_ID)
     panel = workspace.toolbarPanels.itemById(PANEL_ID)
-    control = panel.controls.addCommand(cmd_def, COMMAND_BESIDE_ID, False)
-    control.isPromoted = IS_PROMOTED
+    # isPromoted is left alone: Fusion remembers whether the user pinned the
+    # button, and setting it here would overrule that on every launch.
+    panel.controls.addCommand(cmd_def, COMMAND_BESIDE_ID, False)
 
 
 # Executed when add-in is stopped.
@@ -107,6 +116,9 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     inputs = args.command.commandInputs
     units = app.activeProduct.unitsManager.defaultLengthUnits
 
+    # F1 with the dialog open opens this local page.
+    args.command.helpFile = HELP_PATH
+
     def value_input(input_id: str, name: str, default: str):
         return inputs.addValueInput(input_id, name, units, adsk.core.ValueInput.createByString(default))
 
@@ -124,6 +136,7 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
 
     # Style.
     inputs.addBoolValueInput(INPUT_OPEN_TOP, 'Open Top', True, '', False)
+    inputs.addBoolValueInput(INPUT_APPEARANCE, 'Laser Cut Appearance', True, '', True)
 
     # Sits at the bottom of the dialog and stays hidden until something is
     # wrong, so a valid box shows no clutter. No label, so it spans the
@@ -177,6 +190,7 @@ def read_parameters(inputs: adsk.core.CommandInputs) -> BoxParameters:
         kerf=value(INPUT_KERF),
         finger_width=value(INPUT_FINGER_WIDTH),
         open_top=inputs.itemById(INPUT_OPEN_TOP).value,
+        realistic_appearance=inputs.itemById(INPUT_APPEARANCE).value,
     )
 
 
@@ -308,12 +322,28 @@ def place_panel(component: adsk.fusion.Component, body: adsk.fusion.BRepBody, pa
     move_features.add(move_input)
 
 
-def group_timeline_entries(timeline: adsk.fusion.Timeline, start_index: int):
+def design_timeline(design: adsk.fusion.Design):
+    """The design's timeline, or None in a direct modelling design.
+
+    A direct design has no history, and asking for `design.timeline` there
+    raises rather than returning nothing, so this is the one place that asks.
+    """
+    if design.designType != adsk.fusion.DesignTypes.ParametricDesignType:
+        return None
+
+    return design.timeline
+
+
+def group_timeline_entries(timeline, start_index: int):
     """Collapse everything created since start_index into one timeline group.
 
     A box is a dozen or so features; left loose they bury whatever else is in
-    the user's timeline.
+    the user's timeline. There is nothing to group in a direct design, where
+    `timeline` and `start_index` are both None.
     """
+    if timeline is None:
+        return
+
     end_index = timeline.markerPosition - 1
     if end_index <= start_index:
         return
@@ -343,9 +373,11 @@ def build_box(params: BoxParameters, design: adsk.fusion.Design, is_preview: boo
     component = design.rootComponent
 
     # Remember where the timeline was so everything below can be collapsed
-    # into one group afterwards.
-    timeline = design.timeline
-    start_index = timeline.markerPosition
+    # into one group afterwards. Direct designs have no timeline, and so
+    # nothing to remember or collapse.
+    timeline = design_timeline(design)
+    # `is not None`, not a truth test: an empty timeline is falsy.
+    start_index = timeline.markerPosition if timeline is not None else None
 
     # Worked out once and reused: the outline decides both what is drawn and
     # which profile belongs to which panel.
@@ -361,9 +393,14 @@ def build_box(params: BoxParameters, design: adsk.fusion.Design, is_preview: boo
     # all, and the extrudes then have nothing to work from.
     draw_panels(sketch, panels, outlines)
 
+    # Painted between the extrude and the move, while the panel is still
+    # flat: see appearance.Painter for why that is the only place it works.
+    painter = appearance.painter(design, params.realistic_appearance)
+
     for panel in panels:
         profile = find_profile(sketch, panel, outlines[panel.name])
         body = extrude_panel(component, profile, panel, params.thickness)
+        painter.paint(body)
         place_panel(component, body, panel)
 
     group_timeline_entries(timeline, start_index)

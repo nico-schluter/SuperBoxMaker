@@ -96,6 +96,9 @@ class BoxParameters:
     `open_top` leaves the lid off and finishes the walls with a plain top
     edge, for a tray or an open box.
 
+    `realistic_appearance` is purely cosmetic and does not touch any of the
+    geometry below; it rides along here so the dialog has one thing to read.
+
     `finger_width` is a minimum rather than an exact size: an edge has to
     divide into a whole number of fingers, so the count is rounded down and
     the real width derived back from it. The fingers that come out are at
@@ -109,6 +112,7 @@ class BoxParameters:
     kerf: float
     finger_width: float
     open_top: bool = False
+    realistic_appearance: bool = True
 
 
 def finger_count(edge_length: float, minimum_width: float, require_odd: bool = False) -> int:

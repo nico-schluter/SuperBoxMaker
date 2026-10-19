@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Laser Cut Box</title>
+<style>
+  body { font: 13px/1.5 "Segoe UI", -apple-system, sans-serif; color: #222;
+         margin: 1.5em; max-width: 36em; }
+  h1 { font-size: 1.4em; margin: 0 0 0.2em; }
+  h2 { font-size: 1.1em; margin: 1.4em 0 0.4em; }
+  p.lead { color: #555; margin-top: 0; }
+  dt { font-weight: 600; margin-top: 0.6em; }
+  dd { margin: 0 0 0 1.4em; }
+  code { background: #f2f2f2; padding: 0 0.25em; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<h1>Laser Cut Box</h1>
+<p class="lead">Generates a laser-cut box with finger joints: one flat sketch of
+every panel, extruded to material thickness and assembled in 3D.</p>
+
+<h2>Steps</h2>
+<ol>
+  <li>Open or create a design, then run <strong>Laser Cut Box</strong> from the
+      Solid tab's Create panel.</li>
+  <li>Enter the outer length, width and height of the finished box.</li>
+  <li>Set <strong>Material Thickness</strong> and <strong>Kerf</strong> to match
+      the sheet and the machine you will cut on.</li>
+  <li>Adjust <strong>Min Finger Width</strong> and <strong>Open Top</strong>
+      until the preview looks right. Any problem with the values is reported in
+      red at the bottom of the dialog, and OK stays disabled until it is fixed.</li>
+  <li>Click OK. The panels land as separate bodies, with the flat
+      <code>Flat Layout</code> sketch and all the features collected into one
+      <code>Box</code> timeline group.</li>
+  <li>To cut the parts, right-click the <code>Flat Layout</code> sketch and
+      export it as DXF.</li>
+</ol>
+
+<h2>Properties</h2>
+<dl>
+  <dt>Length, Width, Height</dt>
+  <dd>Outer dimensions of the assembled box, measured over the panel faces.</dd>
+
+  <dt>Material Thickness</dt>
+  <dd>Thickness of the sheet. Panels are extruded to this, and it also sets the
+      finger joint limits: a finger has to be at least two thicknesses wide, or
+      the material cut back at a corner eats into it.</dd>
+
+  <dt>Kerf</dt>
+  <dd>Width of material the beam removes. Outlines are relieved by half this on
+      each cut edge, so the parts come off the machine the intended size and the
+      joints stay tight. Set it to 0 to draw nominal geometry.</dd>
+
+  <dt>Min Finger Width</dt>
+  <dd>A minimum, not an exact width. Each edge is divided into a whole number of
+      fingers, so the real fingers are this wide or a little wider. Every edge
+      gets at least three fingers, which on a short edge can override the
+      request and force wider fingers than asked for.</dd>
+
+  <dt>Open Top</dt>
+  <dd>Omits the top panel, leaving a tray. The walls finish flush along
+      the open edge with no fingers on it; the vertical corner joints still run
+      the full height, so the corners stay interlocked.</dd>
+
+  <dt>Laser Cut Appearance</dt>
+  <dd>Cosmetic only. Paints the sheet faces as MDF and the cut edges dark, the
+      way they come back off a laser. Turn it off for plain untextured bodies.</dd>
+</dl>
+
+</body>
+</html>
