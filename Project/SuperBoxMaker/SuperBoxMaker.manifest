@@ -1,0 +1,15 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "df9c557d-f8c6-4768-b577-520b6c8c0eb7",
+    "author": "phos.systems",
+    "description": {
+        "": "Super Box Maker generates laser-cut boxes with finger joints. Set the outside dimensions, material thickness and kerf, and get a flat sketch of every panel ready to cut, assembled in 3D so you can check the fit. The sketch stays live: add a hole to a panel and the model follows. The add-in does not collect any user data. Privacy policy: privacy-policy.html (shipped with this add-in)."
+    },
+    "version": "0.1.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true,
+    "iconFilename": "AddInIcon.svg",
+    "privacyPolicyFilename": "privacy-policy.html"
+}

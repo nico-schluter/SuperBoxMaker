@@ -1,0 +1,4 @@
+# Keep development-only files out of `git archive` packages.
+.gitattributes export-ignore
+.vscode/ export-ignore
+.env export-ignore

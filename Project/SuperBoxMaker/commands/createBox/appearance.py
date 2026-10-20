@@ -33,9 +33,9 @@ CUT_APPEARANCE_NAME = 'Powder Coat - Rough (Black)'
 # The faces that were the surface of the sheet.
 SHEET_APPEARANCE_NAME = 'MDF Board'
 
-# How closely a face normal must line up with the extrude direction to count
-# as a face of the sheet rather than a cut edge. Generous, because the only
-# other faces on a panel are exactly perpendicular to it.
+# How closely a face normal must line up with the sketch normal to count as a
+# face of the sheet rather than a cut edge. Generous, because the only other
+# faces on a panel are exactly perpendicular to it.
 NORMAL_TOLERANCE = 1e-3
 
 
@@ -86,13 +86,15 @@ class Painter:
     wherever the marker sits.
 
     Lying flat is also what makes the sheet faces easy to name: a panel is
-    extruded along z, so they are the only faces square to it.
+    extruded along z, so they are the only faces square to it. Which way
+    along z does not matter here -- both sheet faces get the same
+    appearance -- so this is indifferent to the extrude direction.
     """
 
     def __init__(self, cut: adsk.core.Appearance, sheet: adsk.core.Appearance):
         self._cut = cut
         self._sheet = sheet
-        self._extrude_direction = adsk.core.Vector3D.create(0, 0, 1)
+        self._sheet_normal = adsk.core.Vector3D.create(0, 0, 1)
 
     def paint(self, body: adsk.fusion.BRepBody):
         """Paint one panel, still flat in the sketch plane."""
@@ -106,8 +108,8 @@ class Painter:
         """The two faces of a panel that were the surfaces of the sheet.
 
         Everything else on the panel -- its sides, and the walls of every
-        finger and notch -- runs parallel to the extrude direction and was
-        made by the beam.
+        finger and notch -- runs parallel to the extrude axis and was made by
+        the beam.
         """
         faces = []
         for index in range(body.faces.count):
@@ -115,7 +117,7 @@ class Painter:
             plane = adsk.core.Plane.cast(face.geometry)
             if plane is None:
                 continue
-            if abs(abs(plane.normal.dotProduct(self._extrude_direction)) - 1.0) < NORMAL_TOLERANCE:
+            if abs(abs(plane.normal.dotProduct(self._sheet_normal)) - 1.0) < NORMAL_TOLERANCE:
                 faces.append(face)
         return faces
 

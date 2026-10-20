@@ -6,6 +6,10 @@ as plain numbers, so the logic can be reasoned about and tested on its own.
 Fusion-specific work lives in entry.py.
 
 All lengths are in Fusion's internal units (centimetres).
+
+Orientation convention: a panel is drawn on the sketch plane and extruded
+away from it, so sketch +z is the *outside* of the finished box for all six
+panels. See EXTRUDE_DIRECTION below.
 """
 
 import math
@@ -19,6 +23,23 @@ MIN_FINGER_COUNT = 3
 # back at a corner eats into the finger beside it and leaves a sliver. Two
 # thicknesses leaves a margin.
 MIN_FINGER_WIDTH_IN_THICKNESSES = 2
+
+# Which way a panel is extruded away from the sketch plane, as a multiple of
+# the material thickness. Negative, so the material hangs *below* the sketch:
+# the sketch plane is then flush with the panel's outward face, and sketch +z
+# points out of the finished box on every one of the six panels.
+#
+# That uniformity is the point. A feature the user adds to the flat layout --
+# engraved text, a coin slot, a vent -- lands on the outside of its panel, the
+# right way round, without having to know which panel it is on. Extruding the
+# other way puts the sketch on the inside face of five panels and the outside
+# of the sixth, so the same text reads correctly on one panel and mirrored
+# from inside the box on the rest.
+#
+# entry.extrude_panel multiplies the thickness by this, and the offsets in
+# panel_layout assume it. Change one without the other and every panel ends
+# up one material thickness out of place.
+EXTRUDE_DIRECTION = -1.0
 
 # Slack for comparing lengths, in internal units (cm), which is 10 picometres.
 # Dialog values do not survive the trip through millimetres exactly: 3 mm
@@ -71,6 +92,12 @@ class Panel:
     the shared sketch. `local_x`/`local_y`/`local_z` and `offset` say where
     the panel ends up once the box is assembled: the axes are where the
     panel's own frame points, the offset is where its origin lands.
+
+    The frame is right-handed, with `local_z` the panel's outward normal.
+    Because the extrude runs the other way (EXTRUDE_DIRECTION), the body
+    occupies local z in [-thickness, 0], which puts the sketch plane itself
+    on the outer face. `offset` is therefore the world position of the
+    panel's (u=0, v=0) corner *on the outside of the box*.
 
     The four edges are named for the side they are on in flat coordinates:
     `edge_v0` is the bottom (v = 0), `edge_u1` the right (u = u), and so on.
@@ -130,9 +157,12 @@ def finger_count(edge_length: float, minimum_width: float, require_odd: bool = F
 
     `require_odd` forces an odd count, which makes the pattern a palindrome:
     it reads the same from either end, and starts and ends in the same state.
-    Top and bottom panels need that, so they present a gap at every corner
-    whichever way round the edge is traversed. Stepping down to reach an odd
-    count keeps the fingers wide, in line with the rounding above.
+    Top and bottom panels need that, for two separate reasons. It is what
+    lets them present a gap at every corner whichever way round the edge is
+    traversed; and it is what lets panel_layout place the Bottom turned over
+    about y, which reverses its u direction and so reads both of its
+    length-wise edges backwards. Stepping down to reach an odd count keeps
+    the fingers wide, in line with the rounding above.
 
     The three finger minimum still wins over all of this. It is the one case
     where fingers can come out narrower than requested, and the only reason
@@ -370,6 +400,12 @@ def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
     the finger patterns decide which material each one actually keeps, so
     neighbouring panels interlock rather than interfere.
 
+    Every panel is placed with its sketch plane on the outside of the box and
+    the material behind it, so the flat layout is a view of the box's six
+    outer faces laid side by side. Features the user adds to the sketch
+    afterwards -- text, slots, holes -- therefore land on the outside of the
+    panel they are drawn on, facing out, on every panel alike.
+
     The four walls are ordered counter-clockwise seen from above -- front,
     right, back, left -- and each one carries fingers on its first edge and
     gaps on its last. Going around the loop, every joint therefore pairs a
@@ -392,7 +428,9 @@ def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
     along_width = finger_count(width, params.finger_width, require_odd=True)
 
     # Lids present a gap at every corner, because whichever wall owns that
-    # corner has a finger there.
+    # corner has a finger there. Odd counts above make these palindromes,
+    # which the Bottom's turn-over relies on: reversed, these patterns have
+    # to come out identical or the floor would not meet the walls.
     lid_length = Edge(along_length, starts_out=False)
     lid_width = Edge(along_width, starts_out=False)
 
@@ -410,27 +448,62 @@ def panel_layout(params: BoxParameters, layout_gap_min: float) -> list[Panel]:
     wall_length_top = SMOOTH_EDGE if params.open_top else wall_length
     wall_width_top = SMOOTH_EDGE if params.open_top else wall_width
 
-    x_axis: Vector = (1.0, 0.0, 0.0)
-    y_axis: Vector = (0.0, 1.0, 0.0)
-    z_axis: Vector = (0.0, 0.0, 1.0)
+    # The six axis directions of the assembled box, named for the face each
+    # one points at: the box occupies x in [0, length] with Left at x = 0,
+    # y in [0, width] with Front at y = 0, and z in [0, height].
+    #
+    # Naming them this way makes one invariant of the table below readable at
+    # a glance: a panel's local_z is the direction of its own name, because
+    # local_z is the outward normal and a panel faces the way it is called.
+    toward_right: Vector = (1.0, 0.0, 0.0)
+    toward_left: Vector = (-1.0, 0.0, 0.0)
+    toward_back: Vector = (0.0, 1.0, 0.0)
+    toward_front: Vector = (0.0, -1.0, 0.0)
+    toward_top: Vector = (0.0, 0.0, 1.0)
+    toward_bottom: Vector = (0.0, 0.0, -1.0)
 
-    # Each panel is drawn flat and extruded in +z, so its local frame is
-    # (u, v, thickness). The axes below are where that frame points once the
-    # panel is stood up; local_z is always local_x x local_y, and the offset
-    # accounts for whether that leaves the thickness pointing in or out.
+    # Where each panel's own frame points once it is stood up, and where its
+    # (u=0, v=0) corner lands. Each frame is right-handed, so local_z is
+    # local_x x local_y; a left-handed one would mirror the body.
+    #
+    # Every offset is a plain corner of the box, with no thickness term in
+    # it, which is the sketch-plane-on-the-outside convention showing through:
+    # the outer face of a panel lies in the face of the box's outer envelope,
+    # so its corners are the envelope's corners. Any thickness reappearing
+    # here is a sign the extrude direction and this table have come apart.
+    #
+    # Reading the frames: the two lids keep sketch v pointing along assembled
+    # y, so the Top is a pure translation and the Bottom is the same part
+    # turned over about y -- which is why its u runs toward_left. The four
+    # walls all send sketch v to assembled z, standing up out of the layout,
+    # and their u runs anticlockwise around the box seen from above: Front
+    # +x, Right +y, Back -x, Left -y. That loop is what lets all four walls
+    # be the same part, pairing each wall's fingered first edge with the next
+    # wall's gapped last edge.
     specs = [
-        # name,  u,      v,      x,       y,       z,       offset,                     u0,         u1,        v0,          v1
-        ('Bottom', length, width, x_axis, y_axis, z_axis, (0.0, 0.0, 0.0),
+        # name, u, v, local_x, local_y, local_z, offset, edges u0/u1/v0/v1
+        #
+        # Turning the Bottom over swaps which wall its u0 and u1 edges meet:
+        # u0 lands against the Right wall, not the Left. Harmless while both
+        # carry the same lid_width pattern, but a lid patterned asymmetrically
+        # would have to account for it.
+        ('Bottom', length, width,
+         toward_left, toward_back, toward_bottom, (length, 0.0, 0.0),
          lid_width, lid_width, lid_length, lid_length),
-        ('Top', length, width, x_axis, y_axis, z_axis, (0.0, 0.0, height - thickness),
+        ('Top', length, width,
+         toward_right, toward_back, toward_top, (0.0, 0.0, height),
          lid_width, lid_width, lid_length, lid_length),
-        ('Front', length, height, x_axis, z_axis, (0.0, -1.0, 0.0), (0.0, thickness, 0.0),
+        ('Front', length, height,
+         toward_right, toward_top, toward_front, (0.0, 0.0, 0.0),
          wall_first, wall_last, wall_length, wall_length_top),
-        ('Right', width, height, y_axis, z_axis, x_axis, (length - thickness, 0.0, 0.0),
+        ('Right', width, height,
+         toward_back, toward_top, toward_right, (length, 0.0, 0.0),
          wall_first, wall_last, wall_width, wall_width_top),
-        ('Back', length, height, (-1.0, 0.0, 0.0), z_axis, y_axis, (length, width - thickness, 0.0),
+        ('Back', length, height,
+         toward_left, toward_top, toward_back, (length, width, 0.0),
          wall_first, wall_last, wall_length, wall_length_top),
-        ('Left', width, height, (0.0, -1.0, 0.0), z_axis, (-1.0, 0.0, 0.0), (thickness, width, 0.0),
+        ('Left', width, height,
+         toward_front, toward_top, toward_left, (0.0, width, 0.0),
          wall_first, wall_last, wall_width, wall_width_top),
     ]
 

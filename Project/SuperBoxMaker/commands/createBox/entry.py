@@ -6,7 +6,7 @@ from ...lib import fusionAddInUtils as futil
 from ... import config
 from . import appearance
 from .geometry import (
-    BoxParameters, Panel, Point2D,
+    BoxParameters, Panel, Point2D, EXTRUDE_DIRECTION,
     panel_layout, panel_outline, outline_bounds, validate,
 )
 
@@ -15,7 +15,11 @@ ui = app.userInterface
 
 
 # *** Command identity information. ***
-CMD_ID = "create_Box"
+# Fusion keeps every add-in's command definitions in one namespace, so the id
+# carries the company prefix: a bare "create_Box" is exactly what another box
+# generator would pick, and on a collision addButtonDefinition returns null
+# and stop() would delete the other add-in's command.
+CMD_ID = f'{config.COMPANY_NAME}_create_Box'
 CMD_NAME = 'Laser Cut Box'
 CMD_Description = ('Generate a laser-cut box with finger joints. Creates a flat '
                    'sketch of every panel and assembles them in 3D.')
@@ -72,6 +76,18 @@ MESSAGE_ROWS = 3
 # they are not released and garbage collected.
 local_handlers = []
 
+# The values the dialog last opened with, so a second box starts where the
+# first left off instead of back at the defaults. Module level, so they last
+# as long as the add-in is loaded, which is normally the Fusion session.
+#
+# Only a completed command updates them: a cancelled dialog should leave no
+# trace. The staging dict is written during the build, where the inputs are
+# known good and known readable, and promoted on the way out -- rather than
+# reading the inputs in command_destroy, where the command is already
+# terminating.
+remembered_values: dict = {}
+staged_values: dict = {}
+
 
 # Executed when add-in is run.
 def start():
@@ -120,7 +136,22 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     args.command.helpFile = HELP_PATH
 
     def value_input(input_id: str, name: str, default: str):
-        return inputs.addValueInput(input_id, name, units, adsk.core.ValueInput.createByString(default))
+        """Add a length input, starting from whatever was used last.
+
+        A remembered value is already in internal units, so it goes in as a
+        real; the fallback default is a string so it can be written here in
+        the units it is meant to be read in.
+        """
+        if input_id in remembered_values:
+            initial = adsk.core.ValueInput.createByReal(remembered_values[input_id])
+        else:
+            initial = adsk.core.ValueInput.createByString(default)
+        return inputs.addValueInput(input_id, name, units, initial)
+
+    def bool_input(input_id: str, name: str, default: bool):
+        """Add a checkbox, starting from whatever was used last."""
+        value = remembered_values.get(input_id, default)
+        return inputs.addBoolValueInput(input_id, name, True, '', value)
 
     # Outer dimensions of the box.
     value_input(INPUT_LENGTH, 'Length', '100 mm')
@@ -135,8 +166,8 @@ def command_created(args: adsk.core.CommandCreatedEventArgs):
     value_input(INPUT_FINGER_WIDTH, 'Min Finger Width', '10 mm')
 
     # Style.
-    inputs.addBoolValueInput(INPUT_OPEN_TOP, 'Open Top', True, '', False)
-    inputs.addBoolValueInput(INPUT_APPEARANCE, 'Laser Cut Appearance', True, '', True)
+    bool_input(INPUT_OPEN_TOP, 'Open Top', False)
+    bool_input(INPUT_APPEARANCE, 'Laser Cut Appearance', True)
 
     # Sits at the bottom of the dialog and stays hidden until something is
     # wrong, so a valid box shows no clutter. No label, so it spans the
@@ -192,6 +223,20 @@ def read_parameters(inputs: adsk.core.CommandInputs) -> BoxParameters:
         open_top=inputs.itemById(INPUT_OPEN_TOP).value,
         realistic_appearance=inputs.itemById(INPUT_APPEARANCE).value,
     )
+
+
+def stage_values(params: BoxParameters):
+    """Hold these values as the ones to remember if the command completes."""
+    staged_values.update({
+        INPUT_LENGTH: params.length,
+        INPUT_WIDTH: params.width,
+        INPUT_HEIGHT: params.height,
+        INPUT_THICKNESS: params.thickness,
+        INPUT_KERF: params.kerf,
+        INPUT_FINGER_WIDTH: params.finger_width,
+        INPUT_OPEN_TOP: params.open_top,
+        INPUT_APPEARANCE: params.realistic_appearance,
+    })
 
 
 def draw_panels(sketch: adsk.fusion.Sketch, panels: list[Panel],
@@ -264,10 +309,19 @@ def find_profile(sketch: adsk.fusion.Sketch, panel: Panel,
 
 def extrude_panel(component: adsk.fusion.Component, profile: adsk.fusion.Profile,
                   panel: Panel, thickness: float) -> adsk.fusion.BRepBody:
-    """Extrude one panel profile to material thickness as its own body."""
+    """Extrude one panel profile to material thickness as its own body.
+
+    The extrude runs away from the sketch plane rather than up out of it, so
+    the sketch is left flush with the panel's outward face: see
+    geometry.EXTRUDE_DIRECTION for what that buys and panel_layout for the
+    placement offsets that depend on it.
+    """
     extrudes = component.features.extrudeFeatures
     extrude_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.NewBodyFeatureOperation)
-    extrude_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(thickness))
+    extrude_input.setDistanceExtent(
+        False,
+        adsk.core.ValueInput.createByReal(thickness * EXTRUDE_DIRECTION),
+    )
     extrude = extrudes.add(extrude_input)
 
     body = extrude.bodies.item(0)
@@ -287,10 +341,16 @@ def is_identity(transform: adsk.core.Matrix3D) -> bool:
 def place_panel(component: adsk.fusion.Component, body: adsk.fusion.BRepBody, panel: Panel):
     """Move an extruded panel from its flat layout position into the assembly.
 
-    The panel is currently sitting at its layout origin on the XY plane. The
-    move has to be a single rigid transform, so rather than translating and
-    then rotating, the rotation is applied about the sketch origin and the
-    translation is pre-compensated for where that rotation sends the panel.
+    The panel is currently hanging below its layout origin on the XY plane.
+    The move has to be a single rigid transform, so rather than translating
+    and then rotating, the rotation is applied about the sketch origin and
+    the translation is pre-compensated for where that rotation sends the
+    panel.
+
+    Only the in-plane part of the layout position needs compensating: the
+    panel's thickness runs along local z, which the transform already maps to
+    the panel's outward normal, so which side of the sketch plane the
+    material sits on does not enter here.
     """
     origin_x, origin_y = panel.layout_origin
 
@@ -309,7 +369,11 @@ def place_panel(component: adsk.fusion.Component, body: adsk.fusion.BRepBody, pa
     )
 
     # A panel that is already where it belongs needs no move, and Fusion
-    # rejects an identity transform as invalid rather than ignoring it.
+    # rejects an identity transform as invalid rather than ignoring it. No
+    # panel hits this now that the Bottom is placed turned over -- every one
+    # of the six is either rotated or shifted along the layout -- but it is
+    # cheap insurance against a layout or placement change bringing one back
+    # to the origin.
     if is_identity(transform):
         return
 
@@ -352,19 +416,19 @@ def group_timeline_entries(timeline, start_index: int):
     group.name = TIMELINE_GROUP_NAME
 
 
-def build_box(params: BoxParameters, design: adsk.fusion.Design, is_preview: bool):
+def build_box(params: BoxParameters, design: adsk.fusion.Design):
     """Build the box geometry.
 
     This is the single code path behind both the live preview and the final
-    result. `is_preview` is for the few places where the two legitimately
-    differ -- naming components, attaching parameters, cosmetic detail that
-    isn't worth recomputing on every keystroke. The geometry itself should be
-    identical either way, so that what the user sees is what they get.
+    result, with nothing conditional on which one is asking: what the user
+    sees in the preview is exactly what OK leaves behind.
 
     The flat sketch is the real output: everything downstream is driven by it,
     so that a user editing a panel outline sees the assembled box update.
     """
-    futil.log(f'{CMD_NAME} build_box (preview={is_preview}) {params}')
+    futil.log(f'{CMD_NAME} build_box {params}')
+
+    stage_values(params)
 
     panels = panel_layout(params, LAYOUT_GAP_MIN)
 
@@ -413,7 +477,7 @@ def command_preview(args: adsk.core.CommandEventArgs):
     futil.log(f'{CMD_NAME} Command Preview Event')
 
     design = adsk.fusion.Design.cast(app.activeProduct)
-    build_box(read_parameters(args.command.commandInputs), design, is_preview=True)
+    build_box(read_parameters(args.command.commandInputs), design)
 
     # The preview is a faithful build, so Fusion can keep it as the result
     # instead of discarding it and firing execute again.
@@ -427,7 +491,7 @@ def command_execute(args: adsk.core.CommandEventArgs):
     # Only reached when the preview did not already produce a valid result
     # (for example if the preview was skipped). Same code path either way.
     design = adsk.fusion.Design.cast(app.activeProduct)
-    build_box(read_parameters(args.command.commandInputs), design, is_preview=False)
+    build_box(read_parameters(args.command.commandInputs), design)
 
 
 # This event handler is called when the user changes anything in the command dialog
@@ -454,6 +518,13 @@ def command_validate_input(args: adsk.core.ValidateInputsEventArgs):
 # This event handler is called when the command terminates.
 def command_destroy(args: adsk.core.CommandEventArgs):
     futil.log(f'{CMD_NAME} Command Destroy Event')
+
+    # Keep the values only if the user went through with the box. The staged
+    # ones came from the last build, so they are the values that produced
+    # what is now in the document.
+    if args.terminationReason == adsk.core.CommandTerminationReason.CompletedTerminationReason:
+        remembered_values.update(staged_values)
+    staged_values.clear()
 
     global local_handlers
     local_handlers = []
